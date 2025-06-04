@@ -7,7 +7,7 @@
 #include <unistd.h>
 
 #define BUFSIZE 50
-#define STAGE_NUMBER 5
+#define PU_RATE 0.02
 
 enum {
     TILE_NORMAL = 0,
@@ -18,6 +18,7 @@ enum {
 
 enum {
     RETURN_VALID = 0,
+    RETURN_RESHOW,
     RETURN_WIN,
     RETURN_LOSE,
     RETURN_ERROR
@@ -31,16 +32,17 @@ enum {
 };
 
 enum {
-    OPPOSITE_UP = MOVE_DOWN,
-    OPPOSITE_DOWN = MOVE_UP,
-    OPPOSITE_LEFT = MOVE_RIGHT,
-    OPPOSITE_RIGHT = MOVE_LEFT
+    PU_RESHOW = 0,
+    PU_EXTRAPOINTS,
+    PU_CTR
 };
 
 typedef struct {
     char type;
     char visited;
     char in_path;
+    char is_powerup;
+    char powerup;
 } tile_t;
 
 typedef struct {
@@ -48,9 +50,10 @@ typedef struct {
     tile_t** grid;
 } map_t;
 
-typedef struct{
+typedef struct {
     int x;
     int y;
+    int points;
 } player_t;
 
 void printmap(map_t *map) {
@@ -61,6 +64,16 @@ void printmap(map_t *map) {
                 case TILE_NORMAL:
                     if (tile->visited){
                         printf("o");
+                    }
+                    else if (tile->is_powerup) {
+                        switch(tile->powerup) {
+                            case PU_RESHOW:
+                                printf("S");
+                                break;
+                            case PU_EXTRAPOINTS:
+                                printf("P");
+                                break;
+                        }
                     }
                     else{
                         printf(".");
@@ -145,7 +158,6 @@ void find_path(map_t *map){
             current = &map->grid[y][x];
             current->in_path = 1;
         }
-
     }
 }
 
@@ -157,6 +169,8 @@ void fillmap(map_t *map, int density){
         for (int j = 0; j < map->side; j++) {
             tile_t *tile = &map->grid[j][i];
             tile->visited = 0;
+            tile->is_powerup = 0;
+            tile->powerup = 0;
             if ((!tile->in_path)
                 && (i == 0
                     || i == map->side - 1
@@ -165,8 +179,12 @@ void fillmap(map_t *map, int density){
                     || rand() % 100 <= density)) {
                 tile->type = TILE_WALL;
             }
-            else{
+            else {
                 tile->type = TILE_NORMAL;
+                if (rand() % (map->side * map->side) < (int)(map->side * map->side) * PU_RATE){
+                    tile->is_powerup = 1;
+                    tile->powerup = rand() % PU_CTR;
+                }
             }
         }
     }
@@ -222,23 +240,45 @@ int moveplayer(map_t *map, char direction, player_t *player){
         case MOVE_RIGHT:
             new_y++;
             break;
+        default:
+            return RETURN_ERROR;
     }
 
     tile_t *next_tile = &map->grid[new_y][new_x];
-    next_tile->visited = 1;
     switch(next_tile->type) {
         case TILE_NORMAL:
             map->grid[player->y][player->x].type = TILE_NORMAL;
             map->grid[new_y][new_x].type = TILE_PLAYER;
             player->x = new_x;
             player->y = new_y;
+
+            if (!next_tile->visited) {
+                player->points += 1;
+                next_tile->visited = 1;
+
+                if (next_tile->is_powerup) {
+                    switch (next_tile->powerup) {
+                        case PU_RESHOW:
+                            return RETURN_RESHOW;
+                        case PU_EXTRAPOINTS:
+                            player->points += 10;
+                    }
+                }
+            }
+
             return RETURN_VALID;
+
         case TILE_WALL:
+            next_tile->visited = 1;
             return RETURN_LOSE;
+
         case TILE_END:
             map->grid[player->y][player->x].type = TILE_NORMAL;
             map->grid[new_y][new_x].type = TILE_PLAYER;
+            player->x = new_x;
+            player->y = new_y;
             return RETURN_WIN;
+
         default:
             return RETURN_ERROR;
     }
@@ -248,12 +288,52 @@ void clrscr(){
     system("@cls||clear");
 }
 
-void exitgame(map_t *map, player_t *player, char *buffer){
+void exitgame(map_t *map, player_t *player, char *buffer, int world, int stage){
     printmap(map);
+    printf("You got to World %d, Stage %d\n", world, stage);
+    printf("Points: %d\n", player->points);
     clearmap(map);
     free(player);
     free(buffer);
     exit(EXIT_SUCCESS);
+}
+
+void give_input(char *buffer) {
+
+    // Clear the user input buffer
+    tcflush(0, TCIOFLUSH);
+
+    int invalid_input = 1;
+    char direction = 0;
+
+    while(invalid_input){
+
+        invalid_input = 0;
+        printf("Your moves: ");
+
+        memset(buffer, 0, BUFSIZE);
+        scanf("%50[^\n]", buffer);
+        while(getchar() != '\n'); // Clear the newline character
+
+        for (int i = 0; buffer[i] != '\0'; i++) {
+            direction = buffer[i];
+
+            // Check if input is valid before processing
+            if (direction != MOVE_UP && direction != MOVE_DOWN &&
+                direction != MOVE_LEFT && direction != MOVE_RIGHT) {
+                printf("Invalid input '%c': Use 'wasd' only\n", direction);
+                invalid_input = 1;
+                break;
+            }
+            if (invalid_input) {
+                tcflush(0, TCIOFLUSH);
+            }
+        }
+    }
+}
+
+void enter_shop(){
+
 }
 
 int main(void){
@@ -261,15 +341,15 @@ int main(void){
     srand(time(NULL));
 
     player_t *player = malloc(sizeof(player_t));
+    player->points = 0;
 
     int result = RETURN_VALID;
     char *buffer = malloc(sizeof(char) * BUFSIZE);
-    char direction = 0;
 
     int mapsize = 5;
     int density = 10;
-    int played_stages = 0;
-    int world_nmb = 0;
+    int stage_nmb = 1;
+    int world_nmb = 1;
     map_t *map;
 
     while(1){
@@ -277,56 +357,67 @@ int main(void){
         map = createmap(mapsize, density);
         placeplayer(map, player);
         placeend(map);
-        printf("World-%d, stage %d\n", world_nmb, played_stages);
+        printf("World %d, Stage %d\n", world_nmb, stage_nmb);
         printmap(map);
         sleep(3);
         clrscr();
 
-        // Clear the user input buffer
-        tcflush(0, TCIOFLUSH);
+        give_input(buffer);
 
         int next_round = 0;
-
-        printf("Your moves: ");
-
-        memset(buffer, 0, BUFSIZE);
-        scanf("%50[^\n]", buffer);
-        while(getchar() != '\n'); // Clear the newline character
-
+        char direction;
         for (int i = 0; buffer[i] != '\0'; i++){
             direction = buffer[i];
             result = moveplayer(map, direction, player);
             switch(result){
+
                 case RETURN_VALID:
                     break;
-                case RETURN_LOSE:
-                    printf("You lost: You hit a wall\n");
-                    exitgame(map, player, buffer);
-                    break;
-                case RETURN_WIN:
-                    printf("Congratulations: You won this round!\n");
+
+                case RETURN_RESHOW:
                     printmap(map);
                     sleep(3);
                     clrscr();
+                    give_input(buffer);
+                    i = -1; // Reset buffer loop
+                    break;
+
+                case RETURN_LOSE:
+                    printf("You lost: You hit a wall\n");
+                    exitgame(map, player, buffer, world_nmb, stage_nmb);
+                    break;
+
+                case RETURN_WIN:
+                    printf("Congratulations: You won World %d, Stage %d\n", world_nmb, stage_nmb);
+                    printf("Points: %d\n", player->points);
+                    printmap(map);
+
+                    printf("Press Enter to proceed to next level\n");
+                    getchar();
+                    tcflush(0, TCIOFLUSH);
+
+                    clrscr();
                     clearmap(map);
                     next_round = 1;
+                    i = strlen(buffer); // exit for-loop
                     break;
+
                 case RETURN_ERROR:
-                    printf("Invalid input given: Use 'wasd'\n");
-                    exitgame(map, player, buffer);
+                    printf("Wrong input to move player\n");
+                    exitgame(map, player, buffer, world_nmb, stage_nmb);
             }
         }
         if (!next_round){
             printf("You lost: You did not reach the goal\n");
-            exitgame(map, player, buffer);
+            exitgame(map, player, buffer, world_nmb, stage_nmb);
         }
         next_round = 0;
-        if (played_stages < 5){
+        if (stage_nmb < 5){
             density += 5;
-            played_stages++;
+            stage_nmb++;
         }
         else{
-            played_stages = 0;
+            stage_nmb = 1;
             density = 10;
             mapsize++;
             world_nmb++;
